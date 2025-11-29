@@ -239,6 +239,25 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
             });
             return merged;
           });
+          // Ensure `users` contains entries for every team member (useful when
+          // some profiles haven't been loaded yet). This prevents missing
+          // display names/avatars and keeps workload mapping consistent.
+          setUsers((prev) => {
+            const existing = [...prev];
+            convertedMembers.forEach((mbr) => {
+              const found = existing.find((u) => u.id === mbr.member_id);
+              if (!found) {
+                existing.push({
+                  id: mbr.member_id,
+                  name: `User ${mbr.member_id}`,
+                  email: `user${mbr.member_id}@local`,
+                  role: "member",
+                  avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${mbr.member_id}`,
+                });
+              }
+            });
+            return existing;
+          });
         }
 
         // Load tasks from Supabase

@@ -82,7 +82,7 @@ const TaskItem: React.FC<{ task: Task }> = ({ task }) => {
           )}
         </div>
 
-        {currentUser?.role !== "admin" && task.status !== "Completed" && (
+        {task.status !== "Completed" && (
           <div className="flex items-center gap-1">
             <input
               type="range"
@@ -108,20 +108,35 @@ const TaskItem: React.FC<{ task: Task }> = ({ task }) => {
 };
 
 export const Dashboard = () => {
-  const { currentUser, tasks, teams, triggerAIHealthCheck } = useStore();
+  const { currentUser, tasks, teams, triggerAIHealthCheck, users } = useStore();
   const [agentStatus, setAgentStatus] = useState<
     null | "PROGRESS" | "REASSIGNMENT"
   >(null);
 
   const filteredTasks = useMemo(() => {
-    if (!currentUser) return [];
-    if (currentUser.role === "admin") return tasks;
-    if (currentUser.role === "team_lead") {
-      const myTeam = teams.find((t) => t.lead_id === currentUser.id);
-      return tasks.filter((t) => t.assigned_team_id === myTeam?.id);
-    }
-    return tasks.filter((t) => t.assigned_member_id === currentUser.id);
-  }, [currentUser, tasks, teams]);
+  if (!currentUser) return [];
+
+  // ADMIN → All tasks
+  if (currentUser.role === "admin") return tasks;
+
+  // TEAM LEAD → Find team by ID matching safely
+  if (currentUser.role === "team_lead") {
+    const myTeam = teams.find(
+      (t) => String(t.lead_id) === String(currentUser.id)
+    );
+
+    if (!myTeam) return [];
+
+    return tasks.filter(
+      (t) => String(t.assigned_team_id) === String(myTeam.id)
+    );
+  }
+
+  // TEAM MEMBER → Only assigned tasks
+  return tasks.filter(
+    (t) => String(t.assigned_member_id) === String(currentUser.id)
+  );
+}, [currentUser, tasks, teams]);
 
   const stats = useMemo(() => {
     const completed = filteredTasks.filter(
@@ -250,7 +265,10 @@ export const Dashboard = () => {
 
         {/* Simple Chart */}
         <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-          <div className="w-full" style={{ height: '200px', minHeight: '200px' }}>
+          <div
+            className="w-full"
+            style={{ height: "200px", minHeight: "200px" }}
+          >
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie

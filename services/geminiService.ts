@@ -10,7 +10,6 @@ declare const process: {
 
 const MODEL_NAME = "gemini-2.5-flash";
 
-
 const getGenAIAndHelpers = async (): Promise<{
   ai: any | null;
   Type: any | null;
@@ -37,35 +36,85 @@ export const classifyTaskAndSelectTeam = async (
   description: string,
   teams: Team[]
 ): Promise<{ teamId: number; reasoning: string } | null> => {
+  // Check for OpenAI key first (use OPENAI_API_KEY or Vite env VITE_OPENAI_API_KEY)
+  const OPENAI_KEY =
+    (process && process.env && process.env.OPENAI_API_KEY) ||
+    (typeof import.meta !== "undefined" &&
+      (import.meta as any).env?.VITE_OPENAI_API_KEY);
+
+  const teamsPrompt = teams
+    .map((t) => `ID: ${t.id}, Name: ${t.name}, Skills: ${t.skills.join(", ")}`)
+    .join("\n");
+
+  const prompt = `You are an intelligent Task Assignment Agent for a software company.\nAnalyze the following task and assign it to the most appropriate team based on their skills.\n\nTask Title: "${title}"\nTask Description: "${description}"\n\nAvailable Teams:\n${teamsPrompt}\n\nReturn a JSON object with the 'teamId' (integer) and a short 'reasoning' (string).`;
+
+  // If OpenAI key present, call OpenAI Chat Completions API and preserve same I/O shape
+  if (OPENAI_KEY) {
+    try {
+      const model = "gpt-4.1"; // prefer GPT-4.1; if unavailable you may switch to gpt-4.1-mini
+      const body = {
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a JSON-only responder. Reply with only a JSON object.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.0,
+        max_tokens: 800,
+      } as any;
+
+      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_KEY}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok) {
+        console.warn("OpenAI request failed", resp.status, await resp.text());
+      } else {
+        const json = await resp.json();
+        const content = json?.choices?.[0]?.message?.content;
+        if (content) {
+          let extracted = content.trim();
+          try {
+            return JSON.parse(extracted);
+          } catch {
+            const first = extracted.indexOf("{");
+            const last = extracted.lastIndexOf("}");
+            if (first !== -1 && last !== -1 && last > first) {
+              const sub = extracted.slice(first, last + 1);
+              try {
+                return JSON.parse(sub);
+              } catch (e) {
+                console.warn("Failed to parse JSON from OpenAI content:", e);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("OpenAI RAG call error:", err);
+      // fall through to Gemini fallback below
+    }
+  }
+
+  // Fallback to Gemini if OpenAI not available or failed
   const { ai, Type } = await getGenAIAndHelpers();
 
-  // Graceful fallback if no key is present in the environment
   if (!ai) {
-    console.warn("No API Key provided. Using Mock RAG Agent.");
-    await new Promise((resolve) => setTimeout(resolve, 1500)); // Simulate "Thinking" time
+    console.warn("No AI key provided. Using Mock RAG Agent.");
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     return {
       teamId: teams[0].id,
       reasoning: "Mock RAG: Default assignment (API Key missing).",
     };
   }
-
-  // RAG Step: Inject "Knowledge Base" (Teams & Skills) into the prompt context
-  const teamsPrompt = teams
-    .map((t) => `ID: ${t.id}, Name: ${t.name}, Skills: ${t.skills.join(", ")}`)
-    .join("\n");
-
-  const prompt = `
-    You are an intelligent Task Assignment Agent for a software company.
-    Analyze the following task and assign it to the most appropriate team based on their skills.
-
-    Task Title: "${title}"
-    Task Description: "${description}"
-
-    Available Teams:
-    ${teamsPrompt}
-
-    Return a JSON object with the 'teamId' (integer) and a short 'reasoning' (string).
-  `;
 
   try {
     const response = await ai.models.generateContent({
