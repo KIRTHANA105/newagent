@@ -1,0 +1,5 @@
+{
+  "name": "TaskMasterAI",
+  "description": "An AI-powered task management system featuring automated team classification, workload balancing, and intelligent agent monitoring.",
+  "requestFramePermissions": []
+}
