@@ -10,10 +10,7 @@ declare const process: {
 
 const MODEL_NAME = "gemini-2.5-flash";
 
-// Dynamically import the SDK only when an API key exists so Vite doesn't
-// attempt to resolve `@google/genai` during module load (which can produce
-// a 500 HTML error page if resolution fails). Returns { ai, Type } where
-// `ai` is the GoogleGenAI instance and `Type` is the schema helper.
+
 const getGenAIAndHelpers = async (): Promise<{
   ai: any | null;
   Type: any | null;

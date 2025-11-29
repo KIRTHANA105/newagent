@@ -107,7 +107,7 @@ function hashStringToNumber(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash; // Convert to 32-bit integer
   }
   return Math.abs(hash);
@@ -124,55 +124,89 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(INITIAL_MEMBERS);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agentLogs, setAgentLogs] = useState<AgentLog[]>([]);
+  // Map UUID to hashed number ID for proper lookups
+  const [uuidToIdMap, setUuidToIdMap] = useState<Map<string, number>>(
+    new Map()
+  );
 
   // Load initial data from Supabase on mount
   useEffect(() => {
     const loadInitialData = async () => {
+      // Create UUID to ID mapping
+      const newUuidMap = new Map<string, number>();
+
       try {
         // Load users from Supabase
         const { data: usersData, error: usersError } = await supabase
-          .from('user_profiles')
-          .select('*')
-          .order('created_at', { ascending: true });
+          .from("user_profiles")
+          .select("*")
+          .order("created_at", { ascending: true });
 
         if (!usersError && usersData) {
-          const convertedUsers: User[] = usersData.map((u: any) => ({
-            id: hashStringToNumber(u.id),
-            name: u.name,
-            email: u.email,
-            role: u.role as User['role'],
-            avatar: u.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.name.replace(" ", "")}`,
-          }));
+          console.log("Loaded Users:", usersData.length, usersData);
+
+          const convertedUsers: User[] = usersData.map((u: any) => {
+            const hashedId = hashStringToNumber(u.id);
+            newUuidMap.set(u.id, hashedId); // Store UUID -> ID mapping
+
+            return {
+              id: hashedId,
+              name: u.name,
+              email: u.email,
+              role: u.role as User["role"],
+              avatar:
+                u.avatar ||
+                `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.name.replace(
+                  " ",
+                  ""
+                )}`,
+            };
+          });
+
+          console.log("UUID Map Size:", newUuidMap.size);
+          setUuidToIdMap(newUuidMap);
+
           setUsers((prev) => {
-            // Merge with initial users, avoiding duplicates
+            // Merge with initial users, replacing mocks with real data
             const merged = [...prev];
             convertedUsers.forEach((newUser) => {
-              if (!merged.find(u => u.email === newUser.email)) {
+              const existingIndex = merged.findIndex(
+                (u) => u.email === newUser.email
+              );
+              if (existingIndex >= 0) {
+                // Replace existing (likely mock) user with real data
+                merged[existingIndex] = newUser;
+              } else {
                 merged.push(newUser);
               }
             });
             return merged;
           });
+        } else if (usersError) {
+          console.error("Error loading users:", usersError);
         }
 
-        // Load teams from Supabase
+        // Load teams from Supabase (must be after users to use the UUID map)
         const { data: teamsData, error: teamsError } = await supabase
-          .from('teams')
-          .select('*')
-          .order('created_at', { ascending: true });
+          .from("teams")
+          .select("*")
+          .order("created_at", { ascending: true });
 
         if (!teamsError && teamsData) {
+          console.log("Loaded Teams:", teamsData);
           const convertedTeams: Team[] = teamsData.map((t: any) => ({
             id: t.id,
             name: t.name,
             skills: t.skills || [],
-            lead_id: t.lead_id ? hashStringToNumber(t.lead_id) : 0,
+            lead_id: t.lead_id
+              ? newUuidMap.get(t.lead_id) || hashStringToNumber(t.lead_id)
+              : 0,
           }));
           setTeams((prev) => {
             // Merge with initial teams, avoiding duplicates
             const merged = [...prev];
             convertedTeams.forEach((newTeam) => {
-              if (!merged.find(t => t.id === newTeam.id)) {
+              if (!merged.find((t) => t.id === newTeam.id)) {
                 merged.push(newTeam);
               }
             });
@@ -182,30 +216,57 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
 
         // Load team_members from Supabase
         const { data: membersData, error: membersError } = await supabase
-          .from('team_members')
-          .select('*')
-          .order('created_at', { ascending: true });
+          .from("team_members")
+          .select("*")
+          .order("created_at", { ascending: true });
 
         if (!membersError && membersData) {
+          console.log("Loaded Members:", membersData);
           const convertedMembers: TeamMember[] = membersData.map((m: any) => ({
             id: m.id,
             team_id: m.team_id,
-            member_id: hashStringToNumber(m.member_id), // Convert UUID to number
+            member_id:
+              newUuidMap.get(m.member_id) || hashStringToNumber(m.member_id), // Use UUID map
             workload: m.workload || 0,
           }));
           setTeamMembers((prev) => {
             // Merge with initial members, avoiding duplicates
             const merged = [...prev];
             convertedMembers.forEach((newMember) => {
-              if (!merged.find(m => m.id === newMember.id)) {
+              if (!merged.find((m) => m.id === newMember.id)) {
                 merged.push(newMember);
               }
             });
             return merged;
           });
         }
+
+        // Load tasks from Supabase
+        const { data: tasksData, error: tasksError } = await supabase
+          .from("tasks")
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (!tasksError && tasksData) {
+          const convertedTasks: Task[] = tasksData.map((t: any) => ({
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            status: t.status as Task["status"],
+            assigned_team_id: t.assigned_team_id,
+            assigned_member_id: t.assigned_member_id
+              ? newUuidMap.get(t.assigned_member_id) ||
+                hashStringToNumber(t.assigned_member_id)
+              : null,
+            progress: t.progress || 0,
+            deadline: t.deadline,
+            overload_flag: t.overload_flag || false,
+            created_at: t.created_at,
+          }));
+          setTasks(convertedTasks);
+        }
       } catch (err) {
-        console.error('Error loading initial data from Supabase:', err);
+        console.error("Error loading initial data from Supabase:", err);
       }
     };
 
@@ -235,9 +296,9 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
     // If not found locally, check Supabase
     try {
       const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('email', email)
+        .from("user_profiles")
+        .select("*")
+        .eq("email", email)
         .single();
 
       if (error || !data) {
@@ -250,20 +311,30 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
         id: userId,
         name: data.name,
         email: data.email,
-        role: data.role as User['role'],
-        avatar: data.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.name.replace(" ", "")}`,
+        role: data.role as User["role"],
+        avatar:
+          data.avatar ||
+          `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.name.replace(
+            " ",
+            ""
+          )}`,
       };
 
-      // Add to local state if not already there
+      // Add to local state, replacing mock if exists
       setUsers((prev) => {
-        if (prev.find(u => u.email === email)) return prev;
+        const existingIndex = prev.findIndex((u) => u.email === email);
+        if (existingIndex >= 0) {
+          const newUsers = [...prev];
+          newUsers[existingIndex] = user;
+          return newUsers;
+        }
         return [...prev, user];
       });
 
       setCurrentUser(user);
       return true;
     } catch (err) {
-      console.error('Login error:', err);
+      console.error("Login error:", err);
       return false;
     }
   };
@@ -277,9 +348,9 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
     try {
       // Check if user already exists in profiles
       const { data: existingUser } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('email', email)
+        .from("user_profiles")
+        .select("*")
+        .eq("email", email)
         .single();
 
       if (existingUser) {
@@ -289,11 +360,16 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
           id: userId,
           name: existingUser.name,
           email: existingUser.email,
-          role: existingUser.role as User['role'],
-          avatar: existingUser.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${existingUser.name.replace(" ", "")}`,
+          role: existingUser.role as User["role"],
+          avatar:
+            existingUser.avatar ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${existingUser.name.replace(
+              " ",
+              ""
+            )}`,
         };
         setUsers((prev) => {
-          if (prev.find(u => u.email === email)) return prev;
+          if (prev.find((u) => u.email === email)) return prev;
           return [...prev, user];
         });
         setCurrentUser(user);
@@ -301,10 +377,15 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
       }
 
       // Create new user using Supabase Auth
-      const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(" ", "")}`;
+      const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(
+        " ",
+        ""
+      )}`;
 
       // Generate a temporary password (you can customize this)
-      const tempPassword = `${name.replace(/\s+/g, '')}@${Math.random().toString(36).slice(-8)}`;
+      const tempPassword = `${name.replace(/\s+/g, "")}@${Math.random()
+        .toString(36)
+        .slice(-8)}`;
 
       // Sign up the user with Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
@@ -320,38 +401,63 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
       });
 
       if (authError) {
-        console.error('Error creating auth user:', authError);
+        console.error("Error creating auth user:", authError);
         throw new Error(authError.message);
       }
 
       if (!authData.user) {
-        throw new Error('Failed to create user');
+        throw new Error("Failed to create user");
       }
 
-      // Wait a moment for the trigger to create the profile
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Ensure the `name` and other fields are present in the `user_profiles` table.
+      // Some Supabase setups rely on an auth trigger to create a profile row —
+      // if that trigger is absent or delayed, explicitly upsert the profile here
+      // so the frontend has the expected fields immediately.
+      try {
+        const { data: upsertData, error: upsertError } = await supabase
+          .from("user_profiles")
+          .upsert([
+            {
+              id: authData.user.id,
+              email,
+              name,
+              role,
+              avatar,
+              created_at: new Date().toISOString(),
+            },
+          ])
+          .select()
+          .single();
 
-      // Fetch the created profile
+        if (upsertError) {
+          // Not fatal for frontend — log and continue to attempt to read the profile
+          console.warn("Upsert profile error:", upsertError);
+        }
+      } catch (e) {
+        console.warn("Upsert profile threw:", e);
+      }
+
+      // Fetch the created/updated profile
       const { data: newUserData, error: profileError } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', authData.user.id)
+        .from("user_profiles")
+        .select("*")
+        .eq("id", authData.user.id)
         .single();
 
       if (profileError || !newUserData) {
-        console.error('Error fetching user profile:', profileError);
-        throw new Error('Profile was not created properly');
+        console.error("Error fetching user profile:", profileError);
+        throw new Error("Profile was not created properly");
       }
 
       // Update the profile with the correct role if needed
       if (newUserData.role !== role) {
         const { error: updateError } = await supabase
-          .from('user_profiles')
+          .from("user_profiles")
           .update({ role })
-          .eq('id', authData.user.id);
+          .eq("id", authData.user.id);
 
         if (updateError) {
-          console.error('Error updating role:', updateError);
+          console.error("Error updating role:", updateError);
         }
       }
 
@@ -365,33 +471,59 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
         avatar: newUserData.avatar,
       };
 
-      setUsers((prev) => [...prev, newUser]);
+      setUsers((prev) => {
+        const existingIndex = prev.findIndex((u) => u.email === email);
+        if (existingIndex >= 0) {
+          const newUsers = [...prev];
+          newUsers[existingIndex] = newUser;
+          return newUsers;
+        }
+        return [...prev, newUser];
+      });
 
-      // If user selected a team, add them to team_members in Supabase
+      // If user selected a team, handle team assignment based on role
       if (teamId && authData.user.id) {
+        // If user is a team_lead, update the team's lead_id
+        if (role === "team_lead") {
+          const { error: updateTeamError } = await supabase
+            .from("teams")
+            .update({ lead_id: authData.user.id })
+            .eq("id", teamId);
+
+          if (updateTeamError) {
+            console.error("Error setting team lead:", updateTeamError);
+          } else {
+            // Update local state
+            setTeams((prev) =>
+              prev.map((t) => (t.id === teamId ? { ...t, lead_id: userId } : t))
+            );
+          }
+        }
+
+        // Add user to team_members table (for both team_lead and member)
         // First check if team_member already exists
         const { data: existingMember } = await supabase
-          .from('team_members')
-          .select('*')
-          .eq('team_id', teamId)
-          .eq('member_id', authData.user.id)
+          .from("team_members")
+          .select("*")
+          .eq("team_id", teamId)
+          .eq("member_id", authData.user.id)
           .single();
 
         if (!existingMember) {
           const { data: newMemberData, error: memberError } = await supabase
-            .from('team_members')
+            .from("team_members")
             .insert([
               {
                 team_id: teamId,
                 member_id: authData.user.id, // UUID from auth
                 workload: 0,
-              }
+              },
             ])
             .select()
             .single();
 
           if (memberError) {
-            console.error('Error creating team member:', memberError);
+            console.error("Error creating team member:", memberError);
           } else if (newMemberData) {
             // Add to local state
             const newMember: TeamMember = {
@@ -407,7 +539,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
 
       setCurrentUser(newUser);
     } catch (err) {
-      console.error('Signup error:', err);
+      console.error("Signup error:", err);
       throw err;
     }
   };
@@ -460,17 +592,66 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
     const assignedMemberId =
       teamMates.length > 0 ? teamMates[0].member_id : null;
 
+    // Find the UUID for the assigned member (need to reverse the hash)
+    const assignedMemberUUID = assignedMemberId
+      ? users.find((u) => u.id === assignedMemberId)?.email // We'll use email to find the UUID
+      : null;
+
+    // Get the actual UUID from team_members table
+    let memberUUID = null;
+    if (assignedMemberId) {
+      const memberData = teamMembers.find(
+        (tm) => tm.member_id === assignedMemberId
+      );
+      if (memberData) {
+        // Fetch the actual UUID from Supabase
+        const { data: memberInfo } = await supabase
+          .from("team_members")
+          .select("member_id")
+          .eq("id", memberData.id)
+          .single();
+
+        if (memberInfo) {
+          memberUUID = memberInfo.member_id;
+        }
+      }
+    }
+
+    // Save to Supabase first
+    const { data: savedTask, error: taskError } = await supabase
+      .from("tasks")
+      .insert([
+        {
+          title,
+          description,
+          status: "Pending",
+          assigned_team_id: assignedTeamId,
+          assigned_member_id: memberUUID,
+          progress: 0,
+          deadline,
+          overload_flag: false,
+        },
+      ])
+      .select()
+      .single();
+
+    if (taskError) {
+      console.error("Error creating task in Supabase:", taskError);
+      return;
+    }
+
+    // Create local task object with the ID from Supabase
     const newTask: Task = {
-      id: Date.now(),
-      title,
-      description,
-      status: "Pending",
-      assigned_team_id: assignedTeamId,
+      id: savedTask.id,
+      title: savedTask.title,
+      description: savedTask.description,
+      status: savedTask.status as Task["status"],
+      assigned_team_id: savedTask.assigned_team_id,
       assigned_member_id: assignedMemberId,
-      progress: 0,
-      deadline,
-      overload_flag: false,
-      created_at: new Date().toISOString(),
+      progress: savedTask.progress,
+      deadline: savedTask.deadline,
+      overload_flag: savedTask.overload_flag,
+      created_at: savedTask.created_at,
     };
 
     setTasks((prev) => [...prev, newTask]);
@@ -479,7 +660,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
       addLog(
         newTask.id,
         "RAG",
-        `Selected Team ${teams.find((t) => t.id === assignedTeamId)?.name
+        `Selected Team ${
+          teams.find((t) => t.id === assignedTeamId)?.name
         }. Reason: ${classification.reasoning}`
       );
     } else {
@@ -502,16 +684,29 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
     }
   };
 
-  const updateTaskProgress = (taskId: number, progress: number) => {
+  const updateTaskProgress = async (taskId: number, progress: number) => {
+    const newStatus =
+      progress === 100 ? "Completed" : progress > 0 ? "InProgress" : "Pending";
+
+    // Update in Supabase
+    const { error } = await supabase
+      .from("tasks")
+      .update({
+        progress,
+        status: newStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", taskId);
+
+    if (error) {
+      console.error("Error updating task progress:", error);
+      return;
+    }
+
+    // Update local state
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
-        const newStatus =
-          progress === 100
-            ? "Completed"
-            : progress > 0
-              ? "InProgress"
-              : "Pending";
         return { ...t, progress, status: newStatus };
       })
     );
@@ -559,10 +754,10 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
               prev.map((t) =>
                 t.id === task.id
                   ? {
-                    ...t,
-                    assigned_member_id: freeMember.member_id,
-                    overload_flag: false,
-                  }
+                      ...t,
+                      assigned_member_id: freeMember.member_id,
+                      overload_flag: false,
+                    }
                   : t
               )
             );
