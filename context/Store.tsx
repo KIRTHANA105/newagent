@@ -5,7 +5,7 @@ import React, {
   useEffect,
   ReactNode,
 } from "react";
-import { v4 as uuidv4 } from "uuid";
+
 import { User, Team, TeamMember, Task, AgentLog } from "../types";
 import {
   classifyTaskAndSelectTeam,
@@ -275,7 +275,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
     teamId?: number
   ) => {
     try {
-      // Check if user already exists
+      // Check if user already exists in profiles
       const { data: existingUser } = await supabase
         .from('user_profiles')
         .select('*')
@@ -300,29 +300,59 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
         return;
       }
 
-      // Create new user in Supabase
+      // Create new user using Supabase Auth
       const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(" ", "")}`;
-      
-      // Generate UUID for the user (since database might not have default)
-      const userUuid = uuidv4();
-      
-      const { data: newUserData, error: userError } = await supabase
-        .from('user_profiles')
-        .insert([
-          {
-            id: userUuid,
-            email,
+
+      // Generate a temporary password (you can customize this)
+      const tempPassword = `${name.replace(/\s+/g, '')}@${Math.random().toString(36).slice(-8)}`;
+
+      // Sign up the user with Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password: tempPassword,
+        options: {
+          data: {
             name,
             role,
             avatar,
-          }
-        ])
-        .select()
+          },
+        },
+      });
+
+      if (authError) {
+        console.error('Error creating auth user:', authError);
+        throw new Error(authError.message);
+      }
+
+      if (!authData.user) {
+        throw new Error('Failed to create user');
+      }
+
+      // Wait a moment for the trigger to create the profile
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Fetch the created profile
+      const { data: newUserData, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', authData.user.id)
         .single();
 
-      if (userError) {
-        console.error('Error creating user:', userError);
-        throw userError;
+      if (profileError || !newUserData) {
+        console.error('Error fetching user profile:', profileError);
+        throw new Error('Profile was not created properly');
+      }
+
+      // Update the profile with the correct role if needed
+      if (newUserData.role !== role) {
+        const { error: updateError } = await supabase
+          .from('user_profiles')
+          .update({ role })
+          .eq('id', authData.user.id);
+
+        if (updateError) {
+          console.error('Error updating role:', updateError);
+        }
       }
 
       // Convert UUID to number for frontend compatibility
@@ -331,20 +361,20 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
         id: userId,
         name: newUserData.name,
         email: newUserData.email,
-        role: newUserData.role as User['role'],
+        role: role, // Use the role from signup form
         avatar: newUserData.avatar,
       };
 
       setUsers((prev) => [...prev, newUser]);
 
       // If user selected a team, add them to team_members in Supabase
-      if (teamId && newUserData.id) {
+      if (teamId && authData.user.id) {
         // First check if team_member already exists
         const { data: existingMember } = await supabase
           .from('team_members')
           .select('*')
           .eq('team_id', teamId)
-          .eq('member_id', newUserData.id)
+          .eq('member_id', authData.user.id)
           .single();
 
         if (!existingMember) {
@@ -353,7 +383,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
             .insert([
               {
                 team_id: teamId,
-                member_id: newUserData.id, // UUID from database
+                member_id: authData.user.id, // UUID from auth
                 workload: 0,
               }
             ])
@@ -449,8 +479,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
       addLog(
         newTask.id,
         "RAG",
-        `Selected Team ${
-          teams.find((t) => t.id === assignedTeamId)?.name
+        `Selected Team ${teams.find((t) => t.id === assignedTeamId)?.name
         }. Reason: ${classification.reasoning}`
       );
     } else {
@@ -481,8 +510,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
           progress === 100
             ? "Completed"
             : progress > 0
-            ? "InProgress"
-            : "Pending";
+              ? "InProgress"
+              : "Pending";
         return { ...t, progress, status: newStatus };
       })
     );
@@ -530,10 +559,10 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({
               prev.map((t) =>
                 t.id === task.id
                   ? {
-                      ...t,
-                      assigned_member_id: freeMember.member_id,
-                      overload_flag: false,
-                    }
+                    ...t,
+                    assigned_member_id: freeMember.member_id,
+                    overload_flag: false,
+                  }
                   : t
               )
             );
